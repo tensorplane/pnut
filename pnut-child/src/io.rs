@@ -47,9 +47,12 @@ pub fn write_all(fd: libc::c_int, buf: &[u8]) -> Result<()> {
                 buf.len() - written,
             )
         };
-        if ret >= 0 {
+        if ret > 0 {
             written += ret as usize;
             continue;
+        }
+        if ret == 0 {
+            return Err(Errno(libc::EPIPE));
         }
         let err = Errno::last();
         if err.0 == libc::EINTR {

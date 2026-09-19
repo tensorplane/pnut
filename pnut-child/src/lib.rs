@@ -9,6 +9,7 @@
 //! itself to raw syscalls and simple borrowed views.
 
 mod caps;
+mod completion;
 mod env;
 mod error;
 mod fd;
@@ -23,6 +24,10 @@ mod runtime;
 mod seccomp;
 mod spec;
 
+pub use completion::{
+    COMPLETE_STAGE_MASK, COMPLETION_BINDING_LEN, COMPLETION_RECORD_LEN, CompletionDecodeError,
+    CompletionRecord, CompletionSink,
+};
 pub use fd::FdAction;
 pub use report::{ChildFailure, Stage};
 pub use runtime::run;

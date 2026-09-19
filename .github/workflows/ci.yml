@@ -37,3 +37,9 @@ jobs:
           git diff --exit-code doc/pnut.1 doc/pnut.toml.5
           mandoc -W error doc/pnut.1
           mandoc -W error doc/pnut.toml.5
+
+      # This exercises the real child setup, pivot, dynamic ELF exec, and
+      # completion pipe. It remains ignored for ordinary local test runs.
+      # Keep this last: sudo-owned target files must not affect later steps.
+      - name: Privileged completion evidence integration test
+        run: sudo -E env "HOME=$HOME" "PATH=$PATH" cargo test -p pnut-child --test completion -- --ignored --test-threads=1

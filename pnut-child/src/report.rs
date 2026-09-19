@@ -26,6 +26,7 @@ pub enum Stage {
     Seccomp = 17,
     Cwd = 18,
     Exec = 19,
+    Completion = 20,
 }
 
 impl Stage {
@@ -50,6 +51,7 @@ impl Stage {
             17 => Some(Self::Seccomp),
             18 => Some(Self::Cwd),
             19 => Some(Self::Exec),
+            20 => Some(Self::Completion),
             _ => None,
         }
     }
@@ -175,6 +177,7 @@ impl Reporter {
             Stage::Seccomp => b"pnut: seccomp filter installation failed\n",
             Stage::Cwd => b"pnut: failed to set working directory\n",
             Stage::Exec => b"pnut: exec failed\n",
+            Stage::Completion => b"pnut: completion evidence failed\n",
         };
         let _ = write_stderr(msg);
     }

@@ -243,6 +243,7 @@ fn format_child_failure(failure: &pnut_child::ChildFailure, sandbox: &Sandbox) -
         Stage::Mdwe => format!("failed to set PR_SET_MDWE: {errno_desc}"),
         Stage::Seccomp => format!("seccomp filter installation failed: {errno_desc}"),
         Stage::Cwd => format!("failed to set working directory: {errno_desc}"),
+        Stage::Completion => format!("completion evidence failed: {errno_desc}"),
     }
 }
 

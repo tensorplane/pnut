@@ -62,6 +62,8 @@ The public interface is intentionally narrow:
 - `run(&mut ChildSpec<'_>) -> !` — the executor entry point
 - `ChildSpec<'a>` and subsystem spec types — the data contract
 - `ChildFailure` and `Stage` — the fatal failure protocol
+- `CompletionSink` — an optional prevalidated, fixed-binding completion
+  evidence destination
 
 Everything else (fd helpers, mount syscall wrappers, env assembly, Landlock
 execution) is internal implementation detail.
@@ -82,6 +84,30 @@ the `CLOEXEC` flag closes the write end automatically — the parent reads
 
 When `status_fd` is `None` (execve mode), `pnut-child` writes stage-specific
 error messages directly to stderr.
+
+## Completion evidence
+
+When `ChildSpec::completion` is present, `run` requires mount/pivot,
+rlimits, capabilities, descriptor closure, `NO_NEW_PRIVS`, and seccomp to be
+configured and to finish successfully. It then writes and closes exactly one
+42-byte record immediately before `execve`:
+
+```
+[version: u16 LE | tag: "PCMP" | binding: [u8; 32] | complete_stage_mask: u32 LE]
+```
+
+`CompletionRecord::decode(bytes, expected_binding)` accepts only that exact
+framing, version, tag, runtime-owned mask, and expected binding. The binding
+and evidence FD are the only caller-supplied parts of `CompletionSink`;
+callers cannot provide a status, stage bits, or payload. The FD is retained
+through descriptor closure and may not alias the status or sync FD or be
+altered by an FD action. Pipe type, child-write access, and CLOEXEC remain
+explicit parent-side prevalidation responsibilities.
+
+Completion evidence only proves the child reached the `execve` boundary. A
+consumer must accept it only alongside a clean CLOEXEC close of the separate
+status FD and no `ChildFailure`; an `execve` failure follows the record with a
+fatal status record.
 
 ## Crate properties
 
