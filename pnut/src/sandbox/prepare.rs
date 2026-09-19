@@ -103,6 +103,7 @@ impl Sandbox {
         Ok(ChildSpec {
             sync_fd: None,
             status_fd: None,
+            completion: None,
             process,
             mounts,
             hostname,

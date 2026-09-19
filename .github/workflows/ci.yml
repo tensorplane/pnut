@@ -22,8 +22,10 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Test
-        run: cargo test --workspace
+      # GitHub-hosted runners restrict the namespaces used by existing pnut
+      # integration tests, so compile their complete graph as the runner user.
+      - name: Compile workspace tests
+        run: cargo test --workspace --no-run
 
       - name: Docs
         run: cargo doc --workspace --no-deps --all-features
@@ -31,9 +33,22 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
       - name: Check man pages are up-to-date
+        # Pin generation to the committed release date for reproducibility.
+        env:
+          SOURCE_DATE_EPOCH: 1776384000
         run: |
           sudo apt-get install -y scdoc mandoc
           doc/generate.sh
           git diff --exit-code doc/pnut.1 doc/pnut.toml.5
           mandoc -W error doc/pnut.1
           mandoc -W error doc/pnut.toml.5
+
+      # Run namespace-dependent tests only after all runner-owned work: sudo
+      # can create root-owned target files, so privileged steps stay last.
+      - name: Test workspace with required privileges
+        run: sudo -E env "HOME=$HOME" "PATH=$PATH" cargo test --workspace
+
+      # This additionally exercises completion evidence through pivot and a
+      # dynamic ELF exec. It remains ignored for ordinary local test runs.
+      - name: Privileged completion evidence integration test
+        run: sudo -E env "HOME=$HOME" "PATH=$PATH" cargo test -p pnut-child --test completion -- --ignored --test-threads=1

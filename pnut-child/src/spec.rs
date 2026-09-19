@@ -2,6 +2,7 @@
 
 use core::ffi::{CStr, c_char};
 
+use crate::completion::CompletionSink;
 use crate::fd::FdAction;
 
 /// One complete child-runtime invocation.
@@ -9,6 +10,7 @@ use crate::fd::FdAction;
 pub struct ChildSpec<'a> {
     pub sync_fd: Option<libc::c_int>,
     pub status_fd: Option<libc::c_int>,
+    pub completion: Option<CompletionSink<'a>>,
     pub process: ProcessSpec,
     pub mounts: Option<MountPlan<'a>>,
     pub hostname: Option<&'a CStr>,
