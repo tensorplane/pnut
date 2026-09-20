@@ -6,7 +6,9 @@ use crate::completion::{
     COMPLETE_RLIMITS, COMPLETE_SECCOMP, COMPLETE_STAGE_MASK,
 };
 use crate::env;
+use crate::error::Errno;
 use crate::fd;
+use crate::install_seccomp;
 use crate::io::read_byte;
 use crate::landlock;
 use crate::mount;
@@ -14,7 +16,6 @@ use crate::net;
 use crate::process::{self, Prctl};
 use crate::report::{Reporter, Stage};
 use crate::rlimit;
-use crate::seccomp;
 use crate::spec::ChildSpec;
 
 const EXIT_SETUP_FAILED: libc::c_int = 126;
@@ -201,9 +202,14 @@ pub fn run(spec: &mut ChildSpec<'_>) -> ! {
     }
 
     if let Some(seccomp_spec) = spec.seccomp.as_ref()
-        && let Err(err) = seccomp::install(seccomp_spec)
+        && let Err(err) = install_seccomp(seccomp_spec)
     {
-        let _ = reporter.report_errno(Stage::Seccomp, err, 0, EXIT_SETUP_FAILED);
+        let _ = reporter.report_errno(
+            Stage::Seccomp,
+            Errno::new(err.errno()),
+            0,
+            EXIT_SETUP_FAILED,
+        );
         process::exit_immediately(EXIT_SETUP_FAILED);
     }
     if spec.seccomp.is_some() {
