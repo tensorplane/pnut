@@ -607,6 +607,12 @@ fn prepared_bind_case(command: &'static CStr) -> ProductionResult {
         }));
     }
     mounts.push(MountEntry::Bind(BindMount {
+        source: BindMountSource::Path(c"/proc"),
+        dst_rel: c"proc",
+        src_is_dir: true,
+        read_only: true,
+    }));
+    mounts.push(MountEntry::Bind(BindMount {
         source: BindMountSource::Prepared(&source_mount),
         dst_rel: c"source",
         src_is_dir: true,
@@ -673,9 +679,12 @@ fn prepared_bind_case(command: &'static CStr) -> ProductionResult {
         status: read_all(status_read),
     };
     drop(source_fd);
+    let unmount = unsafe { libc::umount2(nested_path.as_ptr(), libc::MNT_DETACH) };
     assert_eq!(
-        unsafe { libc::umount2(nested_path.as_ptr(), libc::MNT_DETACH) },
-        0
+        unmount,
+        0,
+        "nested source cleanup: {}",
+        std::io::Error::last_os_error()
     );
     fs::remove_dir_all(fixture).expect("remove procfd fixture");
     result
@@ -699,6 +708,20 @@ fn prepared_inherited_fd_bind_preserves_nested_mounts() {
 #[ignore = "requires user and mount namespaces; CI runs production paths explicitly"]
 fn prepared_inherited_fd_bind_is_recursively_read_only() {
     let result = prepared_bind_case(c"! printf blocked > /source/nested/new");
+    assert_eq!(
+        result.exit_status,
+        0,
+        "pnut child failure: {:?}",
+        (!result.status.is_empty()).then(|| decode_failure(&result.status))
+    );
+    assert!(result.status.is_empty());
+    assert_eq!(result.completion.len(), COMPLETION_RECORD_LEN);
+}
+
+#[test]
+#[ignore = "requires user and mount namespaces; CI runs production paths explicitly"]
+fn prepared_inherited_fd_bind_gets_child_local_mount_order() {
+    let result = prepared_bind_case(c"root=0; source=0; n=0; while IFS=' ' read -r _ _ _ _ mountpoint _; do n=$((n + 1)); test \"$mountpoint\" = / && root=$n; test \"$mountpoint\" = /source && source=$n; done < /proc/self/mountinfo; test \"$root\" -gt 0 && test \"$source\" -gt \"$root\"");
     assert_eq!(
         result.exit_status,
         0,
