@@ -184,7 +184,36 @@ fn process_bind_mount(entry: &BindMount<'_>, root_fd: libc::c_int) -> crate::err
             owned = syscall::open_tree(libc::AT_FDCWD, path, flags)?;
             owned.as_raw()
         }
-        BindMountSource::Prepared(prepared) => prepared.0.as_raw(),
+        BindMountSource::Prepared(prepared) => {
+            // The prepared tree crosses the namespace boundary as source
+            // authority only. Temporarily attach it below the not-yet-pivoted
+            // root, then clone that child-visible path so the final tree gets
+            // child-namespace-local mount identities and construction order.
+            if entry.read_only {
+                let mut attr = syscall::MountAttr::new();
+                attr.attr_set = libc::MOUNT_ATTR_RDONLY;
+                syscall::mount_setattr(
+                    prepared.0.as_raw(),
+                    EMPTY_PATH,
+                    libc::AT_EMPTY_PATH as libc::c_uint
+                        | if entry.src_is_dir {
+                            libc::AT_RECURSIVE as libc::c_uint
+                        } else {
+                            0
+                        },
+                    &attr,
+                )?;
+            }
+            syscall::move_mount_to_fd(prepared.0.as_raw(), root_fd, entry.dst_rel)?;
+            let flags = libc::OPEN_TREE_CLONE
+                | libc::OPEN_TREE_CLOEXEC
+                | libc::AT_RECURSIVE as libc::c_uint;
+            owned = syscall::open_tree(root_fd, entry.dst_rel, flags)?;
+            let mut absolute_buf = [0u8; MAX_PATH_BYTES];
+            let absolute = root_absolute_path(entry.dst_rel, &mut absolute_buf)?;
+            syscall::umount2(absolute, syscall::MNT_DETACH)?;
+            owned.as_raw()
+        }
     };
 
     if entry.read_only {
@@ -353,6 +382,23 @@ fn ensure_parent_dirs(root_fd: libc::c_int, rel_path: &CStr) -> crate::error::Re
     buf[parent_end] = 0;
     let parent = unsafe { CStr::from_bytes_with_nul_unchecked(&buf[..=parent_end]) };
     syscall::mkdirat_all(root_fd, parent)
+}
+
+fn root_absolute_path<'a>(
+    rel_path: &CStr,
+    buf: &'a mut [u8; MAX_PATH_BYTES],
+) -> crate::error::Result<&'a CStr> {
+    let root = NEW_ROOT_ABS.to_bytes();
+    let rel = rel_path.to_bytes();
+    let total = root.len() + 1 + rel.len();
+    if total + 1 > buf.len() {
+        return Err(Errno::new(libc::ENAMETOOLONG));
+    }
+    buf[..root.len()].copy_from_slice(root);
+    buf[root.len()] = b'/';
+    buf[root.len() + 1..total].copy_from_slice(rel);
+    buf[total] = 0;
+    CStr::from_bytes_with_nul(&buf[..=total]).map_err(|_| Errno::new(libc::EINVAL))
 }
 
 fn staging_name_cstr(index: usize, buf: &mut [u8; 64]) -> crate::error::Result<&CStr> {
