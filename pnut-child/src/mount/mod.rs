@@ -189,6 +189,16 @@ fn process_bind_mount(entry: &BindMount<'_>, root_fd: libc::c_int) -> crate::err
             // authority only. Temporarily attach it below the not-yet-pivoted
             // root, then clone that child-visible path so the final tree gets
             // child-namespace-local mount identities and construction order.
+            // Drop any inherited shared propagation before the temporary
+            // attachment so detaching it cannot unmount a source peer.
+            let mut propagation = syscall::MountAttr::new();
+            propagation.propagation = syscall::MS_PRIVATE;
+            syscall::mount_setattr(
+                prepared.0.as_raw(),
+                EMPTY_PATH,
+                libc::AT_EMPTY_PATH as libc::c_uint | libc::AT_RECURSIVE as libc::c_uint,
+                &propagation,
+            )?;
             if entry.read_only {
                 let mut attr = syscall::MountAttr::new();
                 attr.attr_set = libc::MOUNT_ATTR_RDONLY;
