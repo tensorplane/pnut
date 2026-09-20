@@ -9,10 +9,10 @@ use bumpalo::Bump;
 use landlock::{ABI, Access, AccessFs, AccessNet, make_bitflags};
 
 use pnut_child::{
-    BindMount, CapsSpec, ChildSpec, EnvBinding, EnvSpec, EnvStorage, ExecSpec, FdAction, FdSpec,
-    FileMount, HidePid as ChildHidePid, LandlockNetRule, LandlockPathRule, LandlockRulesetAttr,
-    LandlockSpec, MountEntry, MountPlan, MqueueMount, ProcMount, ProcSubset as ChildProcSubset,
-    ProcessSpec, RlimitEntry, RlimitSpec, SeccompSpec, TmpfsMount,
+    BindMount, BindMountSource, CapsSpec, ChildSpec, EnvBinding, EnvSpec, EnvStorage, ExecSpec,
+    FdAction, FdSpec, FileMount, HidePid as ChildHidePid, LandlockNetRule, LandlockPathRule,
+    LandlockRulesetAttr, LandlockSpec, MountEntry, MountPlan, MqueueMount, ProcMount,
+    ProcSubset as ChildProcSubset, ProcessSpec, RlimitEntry, RlimitSpec, SeccompSpec, TmpfsMount,
 };
 
 use crate::config::{
@@ -294,7 +294,7 @@ impl Prepare for mount::MountEntry {
                     BuildError::InvalidConfig(format!("cannot stat bind source {src}: {e}"))
                 })?;
                 Ok(MountEntry::Bind(BindMount {
-                    src: alloc_cstr(arena, src, "mount src")?,
+                    source: BindMountSource::Path(alloc_cstr(arena, src, "mount src")?),
                     dst_rel: alloc_cstr(arena, dst.trim_start_matches('/'), "mount dst")?,
                     src_is_dir: metadata.is_dir(),
                     read_only: *read_only,
@@ -623,7 +623,10 @@ mod tests {
 
         match &plan.entries[0] {
             MountEntry::Bind(b) => {
-                assert_eq!(b.src.to_str().unwrap(), "/usr");
+                let BindMountSource::Path(source) = b.source else {
+                    panic!("configured bind must retain its path source");
+                };
+                assert_eq!(source.to_str().unwrap(), "/usr");
                 assert_eq!(b.dst_rel.to_str().unwrap(), "usr");
                 assert!(b.read_only);
             }

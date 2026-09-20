@@ -29,12 +29,13 @@ pub use completion::{
     CompletionRecord, CompletionSink,
 };
 pub use fd::FdAction;
+pub use mount::{MountPrepareError, PreparedBindMount};
 pub use report::{ChildFailure, Stage};
 pub use runtime::run;
 pub use seccomp::{SeccompInstallError, install_seccomp};
 pub use spec::{
-    BindMount, CapsSpec, ChildSpec, EnvBinding, EnvSpec, EnvStorage, ExecSpec, FdSpec, FileMount,
-    HidePid, LandlockNetRule, LandlockPathRule, LandlockRulesetAttr, LandlockSpec, MountEntry,
-    MountPlan, MqueueMount, ProcMount, ProcSubset, ProcessSpec, RlimitEntry, RlimitSpec,
-    SeccompSpec, TmpfsMount,
+    BindMount, BindMountSource, CapsSpec, ChildSpec, EnvBinding, EnvSpec, EnvStorage, ExecSpec,
+    FdSpec, FileMount, HidePid, LandlockNetRule, LandlockPathRule, LandlockRulesetAttr,
+    LandlockSpec, MountEntry, MountPlan, MqueueMount, ProcMount, ProcSubset, ProcessSpec,
+    RlimitEntry, RlimitSpec, SeccompSpec, TmpfsMount,
 };

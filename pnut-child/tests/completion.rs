@@ -1,9 +1,15 @@
 use core::ffi::CStr;
 use core::ptr;
 use pnut_child::{
-    BindMount, COMPLETE_STAGE_MASK, COMPLETION_BINDING_LEN, COMPLETION_RECORD_LEN, CapsSpec,
-    ChildSpec, CompletionRecord, CompletionSink, ExecSpec, FdSpec, MountEntry, MountPlan,
-    ProcessSpec, RlimitSpec, SeccompSpec,
+    BindMount, BindMountSource, COMPLETE_STAGE_MASK, COMPLETION_BINDING_LEN, COMPLETION_RECORD_LEN,
+    CapsSpec, ChildSpec, CompletionRecord, CompletionSink, ExecSpec, FdSpec, MountEntry, MountPlan,
+    PreparedBindMount, ProcessSpec, RlimitSpec, SeccompSpec,
+};
+use std::{
+    ffi::CString,
+    fs::{self, File},
+    os::fd::AsRawFd,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 fn pipe_cloexec() -> (libc::c_int, libc::c_int) {
@@ -369,18 +375,12 @@ fn enter_user_mount_namespace() {
         assert_eq!(unsafe { libc::unshare(libc::CLONE_NEWNS) }, 0);
         return;
     }
+    let uid = unsafe { libc::getuid() };
+    let gid = unsafe { libc::getgid() };
     assert_eq!(unsafe { libc::unshare(libc::CLONE_NEWUSER) }, 0);
     std::fs::write("/proc/self/setgroups", "deny\n").unwrap();
-    std::fs::write(
-        "/proc/self/uid_map",
-        format!("0 {} 1\n", unsafe { libc::getuid() }),
-    )
-    .unwrap();
-    std::fs::write(
-        "/proc/self/gid_map",
-        format!("0 {} 1\n", unsafe { libc::getgid() }),
-    )
-    .unwrap();
+    std::fs::write("/proc/self/uid_map", format!("0 {uid} 1\n")).unwrap();
+    std::fs::write("/proc/self/gid_map", format!("0 {gid} 1\n")).unwrap();
     assert_eq!(unsafe { libc::unshare(libc::CLONE_NEWNS) }, 0);
 }
 
@@ -428,13 +428,13 @@ fn production_case(
     let argv = [exec_path.as_ptr(), ptr::null()];
     let mut mounts = vec![
         MountEntry::Bind(BindMount {
-            src: c"/usr",
+            source: BindMountSource::Path(c"/usr"),
             dst_rel: c"usr",
             src_is_dir: true,
             read_only: true,
         }),
         MountEntry::Bind(BindMount {
-            src: c"/lib",
+            source: BindMountSource::Path(c"/lib"),
             dst_rel: c"lib",
             src_is_dir: true,
             read_only: true,
@@ -444,7 +444,7 @@ fn production_case(
     // on that layout when the dynamic loader instead lives under /lib.
     if std::path::Path::new("/lib64").is_dir() {
         mounts.push(MountEntry::Bind(BindMount {
-            src: c"/lib64",
+            source: BindMountSource::Path(c"/lib64"),
             dst_rel: c"lib64",
             src_is_dir: true,
             read_only: true,
@@ -544,6 +544,169 @@ fn production_case(
         completion: read_all(completion_read),
         status: read_all(status_read),
     }
+}
+
+fn prepared_bind_case(command: &'static CStr) -> ProductionResult {
+    let fixture = std::env::temp_dir().join(format!(
+        "pnut-prepared-bind-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let source = fixture.join("source");
+    let nested = source.join("nested");
+    fs::create_dir_all(&nested).expect("prepared bind fixture");
+    let nested_path = CString::new(nested.as_os_str().as_encoded_bytes()).expect("nested path");
+    assert_eq!(
+        unsafe {
+            libc::mount(
+                c"tmpfs".as_ptr(),
+                nested_path.as_ptr(),
+                c"tmpfs".as_ptr(),
+                0,
+                ptr::null::<libc::c_void>(),
+            )
+        },
+        0,
+        "nested fixture mount: {}",
+        std::io::Error::last_os_error()
+    );
+    fs::write(nested.join("inside"), b"proof").expect("nested source content");
+    let source_fd = File::open(&source).expect("source directory fd");
+    let source_mount = PreparedBindMount::clone_from_fd(source_fd.as_raw_fd(), true)
+        .expect("prepare inherited bind source before namespace clone");
+
+    let (status_read, status_write) = pipe_cloexec();
+    let (completion_read, completion_write) = pipe_cloexec();
+    let binding = [0xB7; COMPLETION_BINDING_LEN];
+    let completion = CompletionSink::new(&binding, completion_write);
+    let path = c"/usr/bin/dash";
+    let argv = [path.as_ptr(), c"-c".as_ptr(), command.as_ptr(), ptr::null()];
+    let mut mounts = vec![
+        MountEntry::Bind(BindMount {
+            source: BindMountSource::Path(c"/usr"),
+            dst_rel: c"usr",
+            src_is_dir: true,
+            read_only: true,
+        }),
+        MountEntry::Bind(BindMount {
+            source: BindMountSource::Path(c"/lib"),
+            dst_rel: c"lib",
+            src_is_dir: true,
+            read_only: true,
+        }),
+    ];
+    if std::path::Path::new("/lib64").is_dir() {
+        mounts.push(MountEntry::Bind(BindMount {
+            source: BindMountSource::Path(c"/lib64"),
+            dst_rel: c"lib64",
+            src_is_dir: true,
+            read_only: true,
+        }));
+    }
+    mounts.push(MountEntry::Bind(BindMount {
+        source: BindMountSource::Prepared(&source_mount),
+        dst_rel: c"source",
+        src_is_dir: true,
+        read_only: true,
+    }));
+    let limits = [];
+    let caps = CapsSpec {
+        effective: [0; 2],
+        permitted: [0; 2],
+        inheritable: [0; 2],
+        bounding_drop: &[],
+        clear_ambient: false,
+    };
+    let filter = [libc::sock_filter {
+        code: (libc::BPF_RET | libc::BPF_K) as u16,
+        jt: 0,
+        jf: 0,
+        k: libc::SECCOMP_RET_ALLOW,
+    }];
+    let mut child_spec = ChildSpec {
+        sync_fd: None,
+        status_fd: Some(status_write),
+        completion: Some(completion),
+        process: ProcessSpec {
+            no_new_privs: true,
+            ..ProcessSpec::default()
+        },
+        mounts: Some(MountPlan { entries: &mounts }),
+        hostname: None,
+        bring_up_loopback: false,
+        env: None,
+        rlimits: Some(RlimitSpec { limits: &limits }),
+        landlock: None,
+        caps: Some(caps),
+        fds: FdSpec {
+            actions: &[],
+            keep: &[],
+            close_fds: true,
+        },
+        seccomp: Some(SeccompSpec {
+            program: libc::sock_fprog {
+                len: filter.len() as u16,
+                filter: filter.as_ptr() as *mut _,
+            },
+            flags: 0,
+        }),
+        cwd: Some(c"/"),
+        exec: ExecSpec { path, argv: &argv },
+    };
+
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0);
+    if pid == 0 {
+        unsafe { libc::close(status_read) };
+        unsafe { libc::close(completion_read) };
+        enter_user_mount_namespace();
+        pnut_child::run(&mut child_spec);
+    }
+    unsafe { libc::close(status_write) };
+    unsafe { libc::close(completion_write) };
+    let result = ProductionResult {
+        exit_status: wait_for(pid),
+        completion: read_all(completion_read),
+        status: read_all(status_read),
+    };
+    drop(source_fd);
+    assert_eq!(
+        unsafe { libc::umount2(nested_path.as_ptr(), libc::MNT_DETACH) },
+        0
+    );
+    fs::remove_dir_all(fixture).expect("remove procfd fixture");
+    result
+}
+
+#[test]
+#[ignore = "requires user and mount namespaces; CI runs production paths explicitly"]
+fn prepared_inherited_fd_bind_preserves_nested_mounts() {
+    let result = prepared_bind_case(c"test -f /source/nested/inside");
+    assert_eq!(
+        result.exit_status,
+        0,
+        "pnut child failure: {:?}",
+        (!result.status.is_empty()).then(|| decode_failure(&result.status))
+    );
+    assert!(result.status.is_empty());
+    assert_eq!(result.completion.len(), COMPLETION_RECORD_LEN);
+}
+
+#[test]
+#[ignore = "requires user and mount namespaces; CI runs production paths explicitly"]
+fn prepared_inherited_fd_bind_is_recursively_read_only() {
+    let result = prepared_bind_case(c"! printf blocked > /source/nested/new");
+    assert_eq!(
+        result.exit_status,
+        0,
+        "pnut child failure: {:?}",
+        (!result.status.is_empty()).then(|| decode_failure(&result.status))
+    );
+    assert!(result.status.is_empty());
+    assert_eq!(result.completion.len(), COMPLETION_RECORD_LEN);
 }
 
 #[test]

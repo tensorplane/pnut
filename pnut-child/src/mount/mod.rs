@@ -10,8 +10,8 @@ use crate::fd::OwnedFd;
 use crate::io::write_stderr;
 use crate::process;
 use crate::spec::{
-    BindMount, FileMount, HidePid, MountEntry, MountPlan, MqueueMount, ProcMount, ProcSubset,
-    TmpfsMount,
+    BindMount, BindMountSource, FileMount, HidePid, MountEntry, MountPlan, MqueueMount, ProcMount,
+    ProcSubset, TmpfsMount,
 };
 
 const NEW_ROOT_ABS: &CStr = c"/tmp/pnut-newroot";
@@ -24,6 +24,39 @@ const CONTENT_STAGING: &CStr = c".pnut-content";
 const CONTENT_STAGING_ABS: &CStr = c"/.pnut-content";
 const MAX_PATH_BYTES: usize = 4096;
 const FSCONFIG_LOG_BYTES: usize = 1024;
+
+/// Detached mount tree prepared before entering a new mount namespace.
+#[derive(Debug)]
+pub struct PreparedBindMount(OwnedFd);
+
+/// Failure while cloning a bind source into a detached mount tree.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MountPrepareError {
+    errno: i32,
+}
+
+impl MountPrepareError {
+    pub const fn errno(self) -> i32 {
+        self.errno
+    }
+}
+
+impl PreparedBindMount {
+    /// Clone `source_fd` while it is still in the caller's mount namespace.
+    pub fn clone_from_fd(
+        source_fd: libc::c_int,
+        recursive: bool,
+    ) -> core::result::Result<Self, MountPrepareError> {
+        let mut flags =
+            libc::OPEN_TREE_CLONE | libc::OPEN_TREE_CLOEXEC | libc::AT_EMPTY_PATH as libc::c_uint;
+        if recursive {
+            flags |= libc::AT_RECURSIVE as libc::c_uint;
+        }
+        syscall::open_tree(source_fd, EMPTY_PATH, flags)
+            .map(Self)
+            .map_err(|error| MountPrepareError { errno: error.0 })
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MountError {
@@ -142,9 +175,17 @@ fn process_mount_entry(
 fn process_bind_mount(entry: &BindMount<'_>, root_fd: libc::c_int) -> crate::error::Result<()> {
     ensure_mount_point(root_fd, entry.dst_rel, entry.src_is_dir)?;
 
-    let flags =
-        libc::OPEN_TREE_CLONE | libc::OPEN_TREE_CLOEXEC | libc::AT_RECURSIVE as libc::c_uint;
-    let mnt_fd = syscall::open_tree(libc::AT_FDCWD, entry.src, flags)?;
+    let owned;
+    let mnt_fd = match entry.source {
+        BindMountSource::Path(path) => {
+            let flags = libc::OPEN_TREE_CLONE
+                | libc::OPEN_TREE_CLOEXEC
+                | libc::AT_RECURSIVE as libc::c_uint;
+            owned = syscall::open_tree(libc::AT_FDCWD, path, flags)?;
+            owned.as_raw()
+        }
+        BindMountSource::Prepared(prepared) => prepared.0.as_raw(),
+    };
 
     if entry.read_only {
         let mut attr = syscall::MountAttr::new();
@@ -152,14 +193,19 @@ fn process_bind_mount(entry: &BindMount<'_>, root_fd: libc::c_int) -> crate::err
         // Apply read-only while the mount is still detached so the target is
         // never visible as writable inside the sandbox.
         syscall::mount_setattr(
-            mnt_fd.as_raw(),
+            mnt_fd,
             EMPTY_PATH,
-            libc::AT_EMPTY_PATH as libc::c_uint,
+            libc::AT_EMPTY_PATH as libc::c_uint
+                | if entry.src_is_dir {
+                    libc::AT_RECURSIVE as libc::c_uint
+                } else {
+                    0
+                },
             &attr,
         )?;
     }
 
-    syscall::move_mount_to_fd(mnt_fd.as_raw(), root_fd, entry.dst_rel)
+    syscall::move_mount_to_fd(mnt_fd, root_fd, entry.dst_rel)
 }
 
 fn process_tmpfs_mount(entry: &TmpfsMount<'_>, root_fd: libc::c_int) -> crate::error::Result<()> {
