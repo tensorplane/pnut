@@ -679,9 +679,12 @@ fn prepared_bind_case(command: &'static CStr) -> ProductionResult {
         status: read_all(status_read),
     };
     drop(source_fd);
+    let unmount = unsafe { libc::umount2(nested_path.as_ptr(), libc::MNT_DETACH) };
     assert_eq!(
-        unsafe { libc::umount2(nested_path.as_ptr(), libc::MNT_DETACH) },
-        0
+        unmount,
+        0,
+        "nested source cleanup: {}",
+        std::io::Error::last_os_error()
     );
     fs::remove_dir_all(fixture).expect("remove procfd fixture");
     result
