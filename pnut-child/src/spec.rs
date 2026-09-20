@@ -4,6 +4,7 @@ use core::ffi::{CStr, c_char};
 
 use crate::completion::CompletionSink;
 use crate::fd::FdAction;
+use crate::mount::PreparedBindMount;
 
 /// One complete child-runtime invocation.
 #[derive(Debug)]
@@ -53,10 +54,17 @@ pub enum MountEntry<'a> {
     File(FileMount<'a>),
 }
 
+/// Source authority for one bind mount.
+#[derive(Clone, Copy, Debug)]
+pub enum BindMountSource<'a> {
+    Path(&'a CStr),
+    Prepared(&'a PreparedBindMount),
+}
+
 /// One bind-mount operation.
 #[derive(Clone, Copy, Debug)]
 pub struct BindMount<'a> {
-    pub src: &'a CStr,
+    pub source: BindMountSource<'a>,
     pub dst_rel: &'a CStr,
     pub src_is_dir: bool,
     pub read_only: bool,

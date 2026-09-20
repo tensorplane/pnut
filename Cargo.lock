@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "pnut-child"
-version = "0.3.0-tensorplane.3"
+version = "0.3.0-tensorplane.4"
 dependencies = [
  "libc",
  "nix",
